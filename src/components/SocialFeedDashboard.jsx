@@ -163,7 +163,7 @@ export default function SocialFeedDashboard({ reports, onVerifyReport, onAnalyze
             }}
           >
             {/* Header badges */}
-            <div style={{ display: 'flex', justifycontent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span
                   style={{

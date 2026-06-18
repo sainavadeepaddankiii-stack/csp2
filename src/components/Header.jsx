@@ -1,5 +1,5 @@
 
-export default function Header({ totalReportsCount, threatIndex = 74 }) {
+export default function Header({ totalReportsCount, threatIndex = 74, onToggleSidebar }) {
   return (
     <header className="app-header glass-card" style={{
       display: 'flex',
@@ -17,6 +17,28 @@ export default function Header({ totalReportsCount, threatIndex = 74 }) {
       zIndex: 100,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {/* Mobile Hamburger Toggle */}
+        <button 
+          onClick={onToggleSidebar}
+          className="sidebar-toggle-btn"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--accent-cyan)',
+            cursor: 'pointer',
+            padding: '4px',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginRight: '4px'
+          }}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+
         <div style={{
           position: 'relative',
           width: '28px',

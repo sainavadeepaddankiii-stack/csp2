@@ -1,5 +1,5 @@
 
-export default function Sidebar({ activeTab, setActiveTab }) {
+export default function Sidebar({ activeTab, setActiveTab, isOpen, setIsOpen }) {
   const menuItems = [
     {
       id: 'dashboard',
@@ -60,19 +60,14 @@ export default function Sidebar({ activeTab, setActiveTab }) {
   ];
 
   return (
-    <aside className="sidebar" style={{
-      width: 'var(--sidebar-width)',
-      backgroundColor: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border-color)',
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100vh',
-      position: 'fixed',
-      left: 0,
-      top: 0,
-      zIndex: 101,
-      padding: '24px 16px'
-    }}>
+    <>
+      {isOpen && (
+        <div 
+          className="sidebar-backdrop" 
+          onClick={() => setIsOpen(false)}
+        ></div>
+      )}
+      <aside className={`sidebar ${isOpen ? 'open' : ''}`}>
       {/* Brand area in sidebar */}
       <div style={{
         display: 'flex',
@@ -165,5 +160,6 @@ export default function Sidebar({ activeTab, setActiveTab }) {
         <div style={{ fontFamily: 'var(--font-mono)' }}>AI RADAR ENGINE v2.1</div>
       </div>
     </aside>
+    </>
   );
 }

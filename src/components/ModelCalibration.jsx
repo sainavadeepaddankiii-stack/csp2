@@ -212,7 +212,7 @@ export default function ModelCalibration() {
               </div>
 
               <div style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid var(--status-safe)' }}>
-                <div style={{ fontSize: '0.7er', color: '#64748b', textTransform: 'uppercase' }}>False Negative Rate</div>
+                <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase' }}>False Negative Rate</div>
                 <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: 'var(--status-safe)', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
                   {benchmarks.falseNegative}% <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 'normal' }}>(&lt;3%)</span>
                 </div>

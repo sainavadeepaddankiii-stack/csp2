@@ -98,7 +98,7 @@ export default function ReportScamForm({ onSubmitReport }) {
             </div>
 
             {/* Platform and Type */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div className="form-row-2col">
               <div className="form-group">
                 <label>Platform / Gateway</label>
                 <select
@@ -137,7 +137,7 @@ export default function ReportScamForm({ onSubmitReport }) {
             </div>
 
             {/* Handle/Caller and Financial Loss */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div className="form-row-2col">
               <div className="form-group">
                 <label>Scammer Username / Phone *</label>
                 <input

@@ -38,6 +38,8 @@ export default function App() {
     setActiveTab('analyzers');
   };
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   // Dynamically calculate threat index based on report count and critical threats
   const totalReportsCount = reports.length;
   const criticalCount = reports.filter((r) => r.threatLevel === 'Critical').length;
@@ -46,11 +48,11 @@ export default function App() {
   return (
     <div className="app-container">
       {/* Navigation Sidebar */}
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} isOpen={sidebarOpen} setIsOpen={setSidebarOpen} />
 
       {/* Main dashboard panels container */}
-      <div className="main-content">
-        <Header totalReportsCount={totalReportsCount} threatIndex={threatIndex} />
+      <div className={`main-content ${sidebarOpen ? 'sidebar-open' : ''}`}>
+        <Header totalReportsCount={totalReportsCount} threatIndex={threatIndex} onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
         
         <main className="content-body">
           {activeTab === 'dashboard' && (
