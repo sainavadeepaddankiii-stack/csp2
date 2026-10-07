@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+import { translations } from '../i18n';
 
-export default function VoiceAnalyzer() {
+export default function VoiceAnalyzer({ lang = 'en' }) {
   const [file, setFile] = useState(null);
-  const [sourceType, setSourceType] = useState('clone'); // 'clone' or 'human'
   const [scanning, setScanning] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -11,7 +11,20 @@ export default function VoiceAnalyzer() {
   const [waveHeights, setWaveHeights] = useState(Array(24).fill(8));
   const [audioUrl, setAudioUrl] = useState(null);
   const [audioBlob, setAudioBlob] = useState(null);
-  const [sampleQuality, setSampleQuality] = useState('studio'); // 'studio' or 'noisy'
+  const [benchmarkData, setBenchmarkData] = useState(null);
+
+  const t = translations[lang] || translations.en;
+
+  useEffect(() => {
+    const saved = localStorage.getItem('voice_benchmark_latest');
+    if (saved) {
+      try {
+        setBenchmarkData(JSON.parse(saved));
+      } catch {
+        // ignore parse error
+      }
+    }
+  }, []);
 
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -20,6 +33,7 @@ export default function VoiceAnalyzer() {
   const streamRef = useRef(null);
   const playbackAudioRef = useRef(null);
   const recordingStartTimeRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   // Clean up Web Audio nodes on unmount
   useEffect(() => {
@@ -30,7 +44,7 @@ export default function VoiceAnalyzer() {
     };
   }, []);
 
-  // Visualizer bar heights animation logic (Fallback for simulations/presets)
+  // Visualizer bar heights animation logic for scanning or playback
   useEffect(() => {
     let interval;
     if ((scanning || isPlaying) && !isRecording && !audioUrl) {
@@ -39,7 +53,6 @@ export default function VoiceAnalyzer() {
           Array(24)
             .fill(0)
             .map((_, index) => {
-              // Deterministic fake waveform peaks without Math.random to satisfy React purity check
               return 6 + ((index * 7 + (Date.now() / 100)) % 28);
             })
         );
@@ -67,14 +80,20 @@ export default function VoiceAnalyzer() {
       }
 
       recordingStartTimeRef.current = startTime;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          noiseSuppression: false,
+          echoCancellation: false,
+          autoGainControl: false
+        }
+      });
       streamRef.current = stream;
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       audioContextRef.current = audioContext;
 
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 64; // Small size for responsive 24-bar visualizer
+      analyser.fftSize = 64;
       analyserRef.current = analyser;
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -99,7 +118,6 @@ export default function VoiceAnalyzer() {
         setFile(recordingName);
 
         const duration = recordingStartTimeRef.current ? (Date.now() - recordingStartTimeRef.current) / 1000 : 0;
-        // Run deep Web Audio forensics checks
         await runVoiceForensics(blob, duration);
       };
 
@@ -109,22 +127,20 @@ export default function VoiceAnalyzer() {
 
       mediaRecorder.start();
 
-      // Hook visualizer state directly to Web Audio analysis
       const draw = () => {
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteFrequencyData(dataArray);
-        
-        // Map FFT bins directly to 24-bar waveform heights
+
         const heights = Array(24).fill(0).map((_, idx) => {
           const val = dataArray[idx % dataArray.length] || 0;
-          return Math.floor((val / 255) * 44) + 6; // Range: [6px - 50px]
+          return Math.floor((val / 255) * 44) + 6;
         });
         setWaveHeights(heights);
         animationRef.current = requestAnimationFrame(draw);
       };
       animationRef.current = requestAnimationFrame(draw);
 
-      await addLog("Recording speech... Capturing laryngeal sound wave metrics.", 100);
+      await addLog("Recording speech... Capturing acoustic waveform metrics.", 100);
 
     } catch {
       await addLog("Microphone access denied or busy. Please check browser permissions.", 100);
@@ -145,258 +161,426 @@ export default function VoiceAnalyzer() {
     setWaveHeights(Array(24).fill(8));
   };
 
-  const runVoiceForensics = async (blob, duration = 0) => {
+  const analyzeAudioBuffer = (audioBuffer, externalDuration = 0) => {
+    const channelData = audioBuffer.getChannelData(0);
+    const duration = externalDuration || audioBuffer.duration;
+
+    const frameSize = 1024;
+    const numFrames = Math.floor(channelData.length / frameSize);
+    const frameEnergies = [];
+    let totalEnergy = 0;
+    let stepDiffs = 0;
+
+    for (let f = 0; f < numFrames; f++) {
+      let sumSq = 0;
+      const offset = f * frameSize;
+      for (let i = 0; i < frameSize; i++) {
+        const sample = channelData[offset + i];
+        sumSq += sample * sample;
+        if (i > 0) {
+          stepDiffs += Math.abs(sample - channelData[offset + i - 1]);
+        }
+      }
+      const rms = Math.sqrt(sumSq / frameSize);
+      frameEnergies.push(rms);
+      totalEnergy += rms;
+    }
+
+    const avgEnergy = frameEnergies.length > 0 ? totalEnergy / frameEnergies.length : 0.01;
+    const noiseFloor = frameEnergies.length > 0 ? Math.min(...frameEnergies) : 0.001;
+    const isVeryNoisy = noiseFloor > 0.08 || (noiseFloor / (avgEnergy || 1)) > 0.45;
+    const isTrulyDigitalSilence = noiseFloor < 0.0001;
+    const speechThreshold = Math.max(0.003, noiseFloor * 3);
+
+    let firstSpeechIndex = frameEnergies.findIndex(e => e > speechThreshold);
+    let lastSpeechIndex = -1;
+    for (let i = frameEnergies.length - 1; i >= 0; i--) {
+      if (frameEnergies[i] > speechThreshold) {
+        lastSpeechIndex = i;
+        break;
+      }
+    }
+
+    let pauseRatio = 0.18;
+    if (firstSpeechIndex !== -1 && lastSpeechIndex > firstSpeechIndex) {
+      const activeSpeechFrames = frameEnergies.slice(firstSpeechIndex, lastSpeechIndex + 1);
+      const internalSilentFrames = activeSpeechFrames.filter(e => e <= speechThreshold).length;
+      pauseRatio = internalSilentFrames / activeSpeechFrames.length;
+    }
+
+    const voicedEnergies = frameEnergies.filter(e => e > speechThreshold);
+    let energyStdDev = 0.035;
+    if (voicedEnergies.length > 5) {
+      const avgV = voicedEnergies.reduce((a, b) => a + b, 0) / voicedEnergies.length;
+      const varV = voicedEnergies.reduce((a, b) => a + Math.pow(b - avgV, 2), 0) / voicedEnergies.length;
+      energyStdDev = Math.sqrt(varV);
+    }
+
+    const pitchValues = [];
+    for (let f = 0; f < numFrames; f++) {
+      if (frameEnergies[f] > speechThreshold) {
+        let zeroCrossings = 0;
+        const offset = f * frameSize;
+        for (let i = 1; i < frameSize; i++) {
+          if ((channelData[offset + i] >= 0 && channelData[offset + i - 1] < 0) ||
+            (channelData[offset + i] < 0 && channelData[offset + i - 1] >= 0)) {
+            zeroCrossings++;
+          }
+        }
+        const framePitch = (zeroCrossings * audioBuffer.sampleRate) / (2 * frameSize);
+        if (framePitch >= 75 && framePitch <= 380) {
+          pitchValues.push(framePitch);
+        }
+      }
+    }
+
+    let pitchMean = 160;
+    let pitchStdDev = 22;
+    if (pitchValues.length > 3) {
+      const sumP = pitchValues.reduce((a, b) => a + b, 0);
+      pitchMean = sumP / pitchValues.length;
+      const variance = pitchValues.reduce((a, b) => a + Math.pow(b - pitchMean, 2), 0) / pitchValues.length;
+      pitchStdDev = Math.sqrt(variance);
+    }
+
+    const spectralSmoothness = totalEnergy > 0 ? Math.min(10, Math.max(1, (stepDiffs / channelData.length) * 100)) : 3.5;
+
+    return {
+      duration,
+      pitchMean: Math.round(pitchMean),
+      pitchStdDev: Math.round(pitchStdDev * 10) / 10,
+      pauseRatio: Math.round(pauseRatio * 100),
+      isVeryNoisy,
+      isTrulyDigitalSilence,
+      energyStdDev: Math.round(energyStdDev * 1000) / 1000,
+      spectralSmoothness: Math.round(spectralSmoothness * 10) / 10
+    };
+  };
+
+  const runVoiceForensics = async (blobOrFile, duration = 0) => {
     setScanning(true);
     setResult(null);
     setLogs([]);
 
-    await addLog("Decompressing recorded sample and loading binary samples...", 100);
-    await addLog("Running biometric validation across 7 neural evaluation layers...", 150);
+    await addLog("Decompressing audio stream & converting to 16 kHz mono...", 100);
 
+    // 1. Client-side File Size Validation (Max 15MB)
+    if (blobOrFile.size && blobOrFile.size > 15 * 1024 * 1024) {
+      await addLog("ERROR: File size exceeds 15MB limit.", 100);
+      setResult({
+        safe: false,
+        verdictLabel: t.verdictVoiceInconclusive,
+        confidencePct: 0,
+        score: null,
+        verdict: t.voiceLargeFileError,
+        isSimulated: false,
+        isShortOrNoisy: true,
+        engines: [],
+        anomalies: [t.voiceLargeFileError]
+      });
+      setScanning(false);
+      return;
+    }
+
+    // 2. Client-side Format Validation
+    const fileName = blobOrFile.name || "audio.wav";
+    const ext = fileName.slice(((fileName.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
+    const validExts = ['wav', 'mp3', 'm4a', 'webm', 'ogg', 'flac', 'aac'];
+    if (ext && !validExts.includes(ext) && blobOrFile.type && !blobOrFile.type.includes('audio')) {
+      await addLog(`ERROR: Invalid file format '.${ext}'.`, 100);
+      setResult({
+        safe: false,
+        verdictLabel: t.verdictVoiceInconclusive,
+        confidencePct: 0,
+        score: null,
+        verdict: t.voiceInvalidFormatError,
+        isSimulated: false,
+        isShortOrNoisy: true,
+        engines: [],
+        anomalies: [t.voiceInvalidFormatError]
+      });
+      setScanning(false);
+      return;
+    }
+
+    // 3. Web Audio API Browser Feature Extraction (Matrix Detail Only)
+    let metrics = null;
+    let engines = [];
     try {
       const audioCtx = audioContextRef.current || new (window.AudioContext || window.webkitAudioContext)();
-      const arrayBuffer = await blob.arrayBuffer();
+      const arrayBuffer = await blobOrFile.arrayBuffer();
       const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      metrics = analyzeAudioBuffer(audioBuffer, duration);
 
-      const channelData = audioBuffer.getChannelData(0);
-      const audioDuration = duration || audioBuffer.duration;
+      const isPitchWarn = metrics.pitchStdDev < 12 || metrics.pitchStdDev > 45;
+      const isPauseWarn = metrics.pauseRatio < 10 || metrics.pauseRatio > 30;
+      const isNoiseWarn = metrics.isVeryNoisy || metrics.isTrulyDigitalSilence;
+      const isLoudnessWarn = metrics.energyStdDev < 0.015;
+      const isSpectralWarn = metrics.spectralSmoothness > 6.5;
 
-      // Autocorrelation zero-crossing rate estimator to find genuine speech fundamental pitch
-      let crossings = 0;
-      let prevVal = 0;
-      for (let i = 0; i < channelData.length; i++) {
-        const val = channelData[i];
-        if (i > 0 && prevVal <= 0 && val > 0) {
-          crossings++;
-        }
-        prevVal = val;
-      }
-
-      const zcrPitch = audioDuration > 0 ? (crossings / audioDuration) : 0;
-      let detectedPitch = Math.round(zcrPitch);
-      if (detectedPitch < 75 || detectedPitch > 400) {
-        detectedPitch = 120 + (channelData.length % 70);
-      }
-
-      // Calculate organic wave fold shimmer & jitter variance deterministically
-      let absoluteEnergy = 0;
-      let amplitudeJumps = 0;
-      for (let i = 0; i < Math.min(channelData.length, 12000); i++) {
-        absoluteEnergy += Math.abs(channelData[i]);
-        if (i > 0) {
-          amplitudeJumps += Math.abs(channelData[i] - channelData[i - 1]);
-        }
-      }
-
-      const shimmerVal = absoluteEnergy > 0 ? Math.min(((amplitudeJumps / absoluteEnergy) * 10).toFixed(2), 7.8) : 1.25;
-      const jitterVariance = ((channelData.length % 100) / 1000).toFixed(2);
-      const jitterVal = (0.22 + Number(shimmerVal) * 0.04 + Number(jitterVariance)).toFixed(2);
-
-      await addLog(`Vocal fundamental pitch F0 detected at: ${detectedPitch} Hz`, 150);
-      await addLog("Verifying pitch consistency and background noise continuity...", 150);
-
-      const isAIClone = sourceType === 'clone';
-
-      let confidence = sampleQuality === 'noisy' ? 72 : 94;
-      if (audioDuration > 0 && audioDuration < 3.0) {
-        confidence = Math.max(50, Math.min(confidence, 68));
-      }
-
-      const probability = isAIClone ? (90 + (channelData.length % 8)) : (2 + (channelData.length % 6));
-      const authenticity = 100 - probability;
-
-      // 7 checks matrix
-      const engines = [
+      engines = [
         {
-          name: "Spectrogram Distribution",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone 
-            ? "Unnatural frequency spikes observed in the 8kHz - 12kHz synthesized bands."
-            : "Acoustic energy distribution matches human vocal tract formants (F1-F4 bands)."
+          name: "Pitch Deviation (F0 SD)",
+          status: isPitchWarn ? "WARN" : "PASS",
+          details: `Pitch deviation F0 SD is ${metrics.pitchStdDev} Hz (${metrics.pitchStdDev >= 12 ? 'strong organic human pitch dynamics' : 'monotone / robotic pitch under 12 Hz'}).`
         },
         {
-          name: "High-Frequency Vocoder Artifacts",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone
-            ? "Repetitive temporal stitching markers detected at 45ms intervals (HiFi-GAN signature)."
-            : "No synthetic vocoder signatures or high-frequency phase alignment anomalies found."
+          name: "Pause Rhythms & Silence Gaps",
+          status: isPauseWarn ? "WARN" : "PASS",
+          details: `Internal pause ratio is ${metrics.pauseRatio}% (${isPauseWarn ? 'unnatural pause spacing outside 10-30% range' : 'within 10-30% organic range'}).`
         },
         {
-          name: "Transformer Synthesis Estimation",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone
-            ? "Predictive phoneme sequence matching score of 98.4% aligns with neural speaker clones."
-            : "Sequence randomness matches natural human linguistic flow parameters."
+          name: "Noise Floor Baseline",
+          status: isNoiseWarn ? "WARN" : "PASS",
+          details: metrics.isVeryNoisy
+            ? "High ambient noise floor reduces vocal isolation accuracy."
+            : metrics.isTrulyDigitalSilence
+              ? "Truly digital zero silence floor (-80 dB) without acoustic room noise."
+              : "Natural acoustic room noise floor present."
         },
         {
-          name: "CNN Vocal Fold Simulation",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone
-            ? "Perfect geometric symmetry detected in the simulated vocal fold glottal flow wave."
-            : "Vocal fold glottal pulse shape matches natural biological tissue characteristics."
+          name: "Loudness Envelope Dynamics",
+          status: isLoudnessWarn ? "WARN" : "PASS",
+          details: `Loudness variation energy SD is ${metrics.energyStdDev} (${isLoudnessWarn ? 'unnaturally steady volume typical of TTS' : 'natural human speech loudness dynamics'}).`
         },
         {
-          name: "Speaker Pitch Consistency (F0 SD)",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone
-            ? `Pitch deviation (F0 SD) is ${jitterVal} Hz (extreme monotone pattern lacking natural throat drift).`
-            : `Pitch deviation (F0 SD) is ${shimmerVal * 2 + 10} Hz (healthy natural melody variations).`
-        },
-        {
-          name: "Background Noise Continuity",
-          status: sampleQuality === 'noisy' ? "WARN" : "PASS",
-          details: sampleQuality === 'noisy'
-            ? "High background noise (SNR < 15dB) limits vocal tract isolation accuracy."
-            : "Continuous ambient room noise floor is stable. No digital gating detected."
-        },
-        {
-          name: "Expressive Emotional Variance",
-          status: isAIClone ? "FAIL" : "PASS",
-          details: isAIClone
-            ? "Acoustic emotional envelope is completely flat, matching synthetic reading profiles."
-            : "Lively speech cadence with dynamic emotional variation and authentic prosody."
+          name: "Spectral Frequency Variance",
+          status: isSpectralWarn ? "WARN" : "PASS",
+          details: `Spectral distribution index is ${metrics.spectralSmoothness} (${isSpectralWarn ? 'excessive vocoder step variance' : 'natural vocal spectral decay'}).`
         }
       ];
+    } catch {
+      // Browser Web Audio decode failure
+    }
 
-      const anomalies = isAIClone ? [
-        `Pitch: ${detectedPitch} Hz (extreme stability, lacks natural throat drift).`,
-        `Speech Jitter: ${jitterVal}% (Below organic human threshold of 0.5%).`,
-        `Speech Shimmer: ${shimmerVal}% (Lacks natural analog breathing fluctuations).`,
-        "Spectral anomalies: Unnatural vocoder stitching at sample boundaries."
-      ] : [
-        `Pitch: ${detectedPitch} Hz (Organic frequency variation).`,
-        `Speech Jitter: ${jitterVal}% (Standard organic larynx fold fluctuations).`,
-        `Speech Shimmer: ${shimmerVal}% (Normal micro-volume variations).`,
-        "Natural respiratory cycles and vocal micro-breaths confirmed."
-      ];
+    await addLog("Sending 16 kHz audio clip to backend audio deepfake model...", 150);
 
-      const verdict = isAIClone 
-        ? `CRITICAL ALERT: DEEPFAKE CLONE SUSPECTED. The voice exhibits mathematical stability typical of neural speech cloning models. Do NOT transfer funds based on these vocal instructions.`
-        : `VERIFIED SECURE: Organic speech signatures confirmed. Vocal jitter, frequency dynamics, and amplitude shifts align with a natural human speaker.`;
+    // 4. Request FastAPI Backend Inference
+    const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+    try {
+      const formData = new FormData();
+      formData.append("file", blobOrFile, fileName);
 
-      setResult({
-        safe: !isAIClone && confidence >= 80,
-        authenticity,
-        probability,
-        confidence,
-        vector: isAIClone ? "Neural Voice Clone (Speech Synthesized)" : "Natural Organic Voice Pattern",
-        anomalies,
-        verdict,
-        engines
+      const response = await fetch(`${backendUrl}/analyze-voice`, {
+        method: "POST",
+        body: formData,
       });
 
-    } catch {
-      await addLog("Error parsing audio buffers. Scanning presets instead...", 100);
-      processAudio(file || 'simulation.wav', sourceType);
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({ detail: response.statusText }));
+        const detailStr = errJson.detail || "";
+
+        if (detailStr.includes("under 3 seconds") || detailStr.includes("short")) {
+          await addLog("Backend returned error: Audio clip under 3 seconds.", 100);
+          setResult({
+            safe: false,
+            verdictLabel: t.verdictVoiceInconclusive,
+            confidencePct: 40,
+            score: null,
+            verdict: t.voiceShortClipError,
+            isSimulated: false,
+            isShortOrNoisy: true,
+            engines,
+            anomalies: [t.voiceShortClipError]
+          });
+        } else if (detailStr.includes("format")) {
+          setResult({
+            safe: false,
+            verdictLabel: t.verdictVoiceInconclusive,
+            confidencePct: 0,
+            score: null,
+            verdict: t.voiceInvalidFormatError,
+            isSimulated: false,
+            isShortOrNoisy: true,
+            engines,
+            anomalies: [t.voiceInvalidFormatError]
+          });
+        } else {
+          setResult({
+            safe: false,
+            verdictLabel: t.verdictVoiceInconclusive,
+            confidencePct: 0,
+            score: null,
+            verdict: detailStr || "Analysis failed.",
+            isSimulated: false,
+            isShortOrNoisy: true,
+            engines,
+            anomalies: [detailStr]
+          });
+        }
+        setScanning(false);
+        return;
+      }
+
+      const data = await response.json();
+      await addLog(`Backend model analysis complete. Synthetic score: ${(data.score * 100).toFixed(1)}%.`, 150);
+
+      const syntheticScorePct = Math.round(data.score * 100);
+      let verdictLabel = t.verdictLikelyHuman;
+      let confidencePct = 80;
+      let safe = true;
+      let verdictDescription = "";
+
+      // Strictly enforce verdict bands per requirement 3:
+      // under 30%: Likely Human
+      // 30-70%: Inconclusive
+      // over 70%: Likely AI-Generated
+      if (data.score < 0.30) {
+        verdictLabel = t.verdictLikelyHuman;
+        confidencePct = Math.round((1 - data.score) * 100);
+        safe = true;
+        verdictDescription = "LIKELY HUMAN VOICE: Trained audio deepfake model classified recording as authentic human speech with organic acoustic harmonics.";
+      } else if (data.score <= 0.70) {
+        verdictLabel = t.verdictVoiceInconclusive;
+        confidencePct = Math.round((1 - Math.abs(data.score - 0.5) * 2) * 100);
+        safe = false;
+        verdictDescription = "INCONCLUSIVE: Trained model score lies within the 30-70% border region. Additional audio sample required.";
+      } else {
+        verdictLabel = t.verdictLikelyAiGenerated;
+        confidencePct = Math.round(data.score * 100);
+        safe = false;
+        verdictDescription = "LIKELY AI-GENERATED: Trained audio deepfake model detected synthetic voice clone patterns and neural vocoder artifacts.";
+      }
+
+      setResult({
+        safe,
+        verdictLabel,
+        confidencePct,
+        score: syntheticScorePct,
+        verdict: verdictDescription,
+        isSimulated: false,
+        isShortOrNoisy: false,
+        isOffline: false,
+        engines,
+        anomalies: [
+          `Trained Model Synthetic Score: ${syntheticScorePct}%`,
+          `Model Classification Label: ${data.label.toUpperCase()}`,
+          `Audio Duration Analyzed: ${data.duration} seconds`,
+          `Web Audio API Matrix Checks: ${engines.filter(e => e.status === 'PASS').length}/5 PASSED`
+        ]
+      });
+
+    } catch (netErr) {
+      // Backend offline handling per requirement 3
+      await addLog("ERROR: Could not connect to detection backend at http://localhost:8000.", 100);
+      setResult({
+        safe: false,
+        verdictLabel: t.verdictServerOffline || "Offline",
+        confidencePct: null,
+        score: null,
+        verdict: t.voiceServerOfflineDesc,
+        isSimulated: false,
+        isShortOrNoisy: false,
+        isOffline: true,
+        engines,
+        anomalies: [
+          "Detection server offline (http://localhost:8000)",
+          "Please start backend: uvicorn backend.main:app --reload --port 8000"
+        ]
+      });
     }
+
     setScanning(false);
   };
 
-  const processAudio = async (fileName, currentSource) => {
+  const runSimulatedPreset = (presetType) => {
     setScanning(true);
     setResult(null);
     setLogs([]);
 
-    await addLog("Decompressing audio stream and extracting sample chunks...", 100);
-    await addLog("Running biometric validation across 7 neural evaluation layers...", 150);
+    let verdictLabel = t.verdictLikelyHuman;
+    let confidencePct = 80;
+    let score = 15;
+    let safe = true;
 
-    const isClone = currentSource === 'clone';
-    let confidence = sampleQuality === 'noisy' ? 72 : 95;
-    
-    if (fileName && (fileName.includes('short') || fileName.includes('capture'))) {
-      confidence = Math.min(confidence, 68);
+    if (presetType === 'synthetic') {
+      score = 85;
+      verdictLabel = t.verdictLikelyAiGenerated;
+      confidencePct = 85;
+      safe = false;
+    } else if (presetType === 'noisy') {
+      score = 45;
+      verdictLabel = t.verdictVoiceInconclusive;
+      confidencePct = 55;
+      safe = false;
+    } else {
+      score = 12;
+      verdictLabel = t.verdictLikelyHuman;
+      confidencePct = 88;
+      safe = true;
     }
 
-    const probability = isClone ? 94 : 6;
-    const authenticity = 100 - probability;
+    const sampleText = presetType === 'synthetic'
+      ? "Sample: Synthetic voice clone (simulated example)"
+      : presetType === 'noisy'
+        ? "Sample: Noisy voicemail clip (simulated example)"
+        : "Sample: Natural human speaker (simulated example)";
 
     const engines = [
       {
-        name: "Spectrogram Distribution",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone 
-          ? "Unnatural frequency spikes observed in the 8kHz - 12kHz synthesized bands."
-          : "Acoustic energy distribution matches human vocal tract formants (F1-F4 bands)."
+        name: "Pitch Deviation (F0 SD)",
+        status: presetType === 'synthetic' ? "WARN" : "PASS",
+        details: presetType === 'synthetic' ? "Pitch deviation F0 SD is 5.2 Hz (monotone / robotic pitch under 12 Hz)." : "Pitch deviation F0 SD is 24.5 Hz (within 12-45 Hz organic range)."
       },
       {
-        name: "High-Frequency Vocoder Artifacts",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone
-          ? "Repetitive temporal stitching markers detected at 45ms intervals (HiFi-GAN signature)."
-          : "No synthetic vocoder signatures or high-frequency phase alignment anomalies found."
+        name: "Pause Rhythms & Silence Gaps",
+        status: presetType === 'synthetic' ? "WARN" : presetType === 'noisy' ? "WARN" : "PASS",
+        details: presetType === 'synthetic' ? "Pause ratio is 5% (outside 10-30% organic range)." : presetType === 'noisy' ? "Pause ratio is 52% (outside 10-30% organic range)." : "Pause ratio is 18% (within 10-30% organic range)."
       },
       {
-        name: "Transformer Synthesis Estimation",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone
-          ? "Predictive phoneme sequence matching score of 98.4% aligns with neural speaker clones."
-          : "Sequence randomness matches natural human linguistic flow parameters."
+        name: "Noise Floor Baseline",
+        status: presetType === 'noisy' ? "WARN" : "PASS",
+        details: presetType === 'noisy' ? "High ambient noise floor reduces vocal isolation accuracy." : "Noise floor is clean without digital gating artifacts."
       },
       {
-        name: "CNN Vocal Fold Simulation",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone
-          ? "Perfect geometric symmetry detected in the simulated vocal fold glottal flow wave."
-          : "Vocal fold glottal pulse shape matches natural biological tissue characteristics."
-      },
-      {
-        name: "Speaker Pitch Consistency (F0 SD)",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone
-          ? "Pitch deviation (F0 SD) is 1.4 Hz (extreme monotone pattern lacking natural throat drift)."
-          : "Pitch deviation (F0 SD) is 18.2 Hz (healthy natural melody variations)."
-      },
-      {
-        name: "Background Noise Continuity",
-        status: sampleQuality === 'noisy' ? "WARN" : "PASS",
-        details: sampleQuality === 'noisy'
-          ? "High background noise (SNR < 15dB) limits vocal tract isolation accuracy."
-          : "Continuous ambient room noise floor is stable. No digital gating detected."
-      },
-      {
-        name: "Expressive Emotional Variance",
-        status: isClone ? "FAIL" : "PASS",
-        details: isClone
-          ? "Acoustic emotional envelope is completely flat, matching synthetic reading profiles."
-          : "Lively speech cadence with dynamic emotional variation and authentic prosody."
+        name: "Loudness Envelope Dynamics",
+        status: presetType === 'synthetic' ? "WARN" : "PASS",
+        details: presetType === 'synthetic' ? "Loudness variation energy SD is 0.008 (steady TTS volume)." : "Loudness variation energy SD is 0.042 (natural vocal dynamics)."
       }
     ];
 
-    const anomalies = isClone ? [
-      "Absence of sub-audible micro-breaths (unnatural continuity index).",
-      "Frequency alignment shows absolute consistency (human pitch varies dynamically).",
-      "Phase shift abnormalities at speech vowel junction transitions.",
-      "Jitter values: 0.12% (extremely low, indicating mathematical vocoder rendering)."
-    ] : [
-      "Natural respiratory gaps (micro-breaths) detected consistently.",
-      "Dynamic jitter and shimmer metrics align with natural laryngeal vibrations.",
-      "Phase alignment matches standard analog vocal tract propagation."
-    ];
-
-    const verdict = isClone 
-      ? `CRITICAL ALERT: DEEPFAKE CLONE SUSPECTED. The voice exhibits mathematical stability typical of neural speech cloning models. Do NOT transfer funds based on these vocal instructions.`
-      : `VERIFIED SECURE: Organic speech signatures confirmed. Vocal jitter, frequency dynamics, and amplitude shifts align with a natural human speaker.`;
-
     setResult({
-      safe: !isClone && confidence >= 80,
-      authenticity,
-      probability,
-      confidence,
-      vector: isClone ? "Neural Voice Clone (Speech Synthesized)" : "Natural Organic Voice Pattern",
-      anomalies,
-      verdict,
-      engines
+      safe,
+      verdictLabel,
+      confidencePct,
+      score,
+      verdict: presetType === 'noisy' ? t.voiceShortOrNoisyNotice : presetType === 'synthetic' ? "POSSIBLE SYNTHETIC VOICE: Simulated voice clone sample exhibiting pitch flatline and unnatural pause ratio." : "LIKELY HUMAN VOICE: Simulated natural speaker audio with organic pitch variance.",
+      isSimulated: true,
+      isShortOrNoisy: presetType === 'noisy',
+      isOffline: false,
+      engines,
+      anomalies: [
+        sampleText,
+        `Trained Model Synthetic Score: ${score}%`,
+        `Pause Ratio: ${presetType === 'noisy' ? '52% (WARN: outside 10-30%)' : presetType === 'synthetic' ? '5% (WARN: outside 10-30%)' : '18% (PASS)'}`,
+        `Pitch Deviation (F0 SD): ${presetType === 'synthetic' ? '5.2 Hz (WARN: under 12 Hz)' : '24.5 Hz (PASS)'}`
+      ]
     });
 
     setScanning(false);
   };
 
+  const handleAudioFileUpload = (e) => {
+    const files = e.target.files;
+    if (files.length > 0) {
+      const audioFile = files[0];
+      if (playbackAudioRef.current) {
+        playbackAudioRef.current.pause();
+        setIsPlaying(false);
+      }
+      setFile(audioFile.name);
+      setAudioBlob(audioFile);
+      const url = URL.createObjectURL(audioFile);
+      setAudioUrl(url);
+      runVoiceForensics(audioFile, 0);
+    }
+  };
+
   const loadPreset = (type) => {
     const presets = {
-      clone1: { name: "grandchild_voice_clone_urgent.wav", src: "clone", quality: 'studio' },
-      clone2: { name: "bank_manager_voice_verification.mp3", src: "clone", quality: 'studio' },
-      noisy_clone: { name: "noisy_voicemail_threat_short.wav", src: "clone", quality: 'noisy' },
-      clean: { name: "boss_meeting_instructions.m4a", src: "human", quality: 'studio' }
+      synthetic: { name: "simulated_voice_clone_sample.mp3", type: 'synthetic' },
+      noisy: { name: "simulated_noisy_voicemail_short.wav", type: 'noisy' },
+      clean: { name: "simulated_natural_speech_sample.m4a", type: 'clean' }
     };
 
     if (playbackAudioRef.current) {
@@ -406,23 +590,11 @@ export default function VoiceAnalyzer() {
     setAudioUrl(null);
     setAudioBlob(null);
 
-    const selPreset = presets[type];
-    setFile(selPreset.name);
-    setSourceType(selPreset.src);
-    setSampleQuality(selPreset.quality);
+    const sel = presets[type];
+    setFile(sel.name);
     setIsPlaying(false);
     setWaveHeights(Array(24).fill(8));
-    processAudio(selPreset.name, selPreset.src);
-  };
-
-  const triggerAnalyze = () => {
-    if (audioBlob) {
-      runVoiceForensics(audioBlob);
-    } else {
-      const mockName = sourceType === 'clone' ? 'uploaded_deepfake_clone.wav' : 'microphone_input_capture.wav';
-      setFile(mockName);
-      processAudio(mockName, sourceType);
-    }
+    runSimulatedPreset(sel.type);
   };
 
   const togglePlayback = () => {
@@ -476,18 +648,31 @@ export default function VoiceAnalyzer() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
         <h3 style={{ fontSize: '1.2rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--accent-cyan)' }}>//</span> AI Voice Cloning & Deepfake Detector
+          <span style={{ color: 'var(--accent-cyan)' }}>//</span> {t.voiceHeaderTitle}
         </h3>
         <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-          Identify AI-generated voice clones. Analyze suspicious emergency phone calls, cash-transfer instructions, or WhatsApp audio notes for neural network synthetic patterns.
+          {t.voiceHeaderDesc}
         </p>
       </div>
 
+      {/* Muted Professional Disclaimer */}
+      <div style={{ padding: '8px 12px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '6px', fontSize: '0.78rem', color: '#94a3b8', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span>💡</span>
+          <span>{t.voiceDisclaimer}</span>
+        </div>
+        {benchmarkData && (
+          <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '2px', borderTop: '1px dashed rgba(255, 255, 255, 0.06)', paddingTop: '4px' }}>
+            📊 {t.modelPerformanceLabel || "Model performance:"} Tested on {benchmarkData.clipCount} clips: <strong style={{ color: 'var(--accent-cyan)' }}>{benchmarkData.accuracyPct}% accuracy</strong>
+          </div>
+        )}
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px' }}>
-        
+
         {/* Left column: Visualizer & controls */}
         <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', padding: '24px 16px' }}>
-          
+
           {/* Animated Waveform */}
           <div style={{
             display: 'flex',
@@ -511,10 +696,10 @@ export default function VoiceAnalyzer() {
                   backgroundColor: isRecording
                     ? 'var(--status-danger)'
                     : isPlaying
-                    ? 'var(--accent-cyan)'
-                    : scanning
-                    ? 'var(--status-danger)'
-                    : '#475569',
+                      ? 'var(--accent-cyan)'
+                      : scanning
+                        ? 'var(--status-danger)'
+                        : '#475569',
                   borderRadius: '2px',
                   transition: 'height 0.08s ease'
                 }}
@@ -523,126 +708,26 @@ export default function VoiceAnalyzer() {
           </div>
 
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            
-            {/* Simulation mode configurations */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600 }}>Biometric Scan Targets:</span>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setSourceType('clone')}
-                  className="btn btn-secondary"
-                  style={{
-                    flex: 1,
-                    fontSize: '0.75rem',
-                    padding: '8px',
-                    backgroundColor: sourceType === 'clone' ? 'rgba(244, 63, 94, 0.15)' : 'transparent',
-                    borderColor: sourceType === 'clone' ? 'var(--status-danger)' : 'var(--border-color)',
-                    color: sourceType === 'clone' ? 'var(--status-danger)' : '#94a3b8'
-                  }}
-                  disabled={scanning || isRecording}
-                >
-                  Neural Clone (Synthetic)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSourceType('human')}
-                  className="btn btn-secondary"
-                  style={{
-                    flex: 1,
-                    fontSize: '0.75rem',
-                    padding: '8px',
-                    backgroundColor: sourceType === 'human' ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
-                    borderColor: sourceType === 'human' ? 'var(--status-safe)' : 'var(--border-color)',
-                    color: sourceType === 'human' ? 'var(--status-safe)' : '#94a3b8'
-                  }}
-                  disabled={scanning || isRecording}
-                >
-                  Human Speaker (Natural)
-                </button>
-              </div>
-            </div>
 
-            {/* Audio Quality / Confidence Calibration Controls */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600 }}>Audio Sample Quality:</span>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setSampleQuality('studio')}
-                  className="btn btn-secondary"
-                  style={{
-                    flex: 1,
-                    fontSize: '0.75rem',
-                    padding: '8px',
-                    backgroundColor: sampleQuality === 'studio' ? 'rgba(6, 182, 212, 0.15)' : 'transparent',
-                    borderColor: sampleQuality === 'studio' ? 'var(--accent-cyan)' : 'var(--border-color)',
-                    color: sampleQuality === 'studio' ? 'var(--accent-cyan)' : '#94a3b8'
-                  }}
-                  disabled={scanning || isRecording}
-                >
-                  Clean Studio (High Confidence)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSampleQuality('noisy')}
-                  className="btn btn-secondary"
-                  style={{
-                    flex: 1,
-                    fontSize: '0.75rem',
-                    padding: '8px',
-                    backgroundColor: sampleQuality === 'noisy' ? 'rgba(245, 158, 11, 0.15)' : 'transparent',
-                    borderColor: sampleQuality === 'noisy' ? 'var(--status-warning)' : 'var(--border-color)',
-                    color: sampleQuality === 'noisy' ? 'var(--status-warning)' : '#94a3b8'
-                  }}
-                  disabled={scanning || isRecording}
-                >
-                  Noisy / Short Clip (Low Confidence &lt; 80%)
-                </button>
-              </div>
-            </div>
+            {/* Hidden File Input for Audio Upload */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="audio/*,.mp3,.wav,.m4a,.webm"
+              style={{ display: 'none' }}
+              onChange={handleAudioFileUpload}
+            />
 
-            {/* Recording & Scan Buttons */}
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            {/* Audio Upload Control (Full Width) */}
+            <div style={{ display: 'flex', width: '100%' }}>
               <button
                 type="button"
-                onClick={() => isRecording ? stopRecording() : startRecording(Date.now())}
-                className="btn"
-                style={{
-                  flex: 1,
-                  fontSize: '0.8rem',
-                  padding: '8px 12px',
-                  backgroundColor: isRecording ? 'var(--status-danger)' : 'rgba(6, 182, 212, 0.15)',
-                  color: isRecording ? '#fff' : 'var(--accent-cyan)',
-                  border: '1px solid',
-                  borderColor: isRecording ? 'var(--status-danger)' : 'rgba(6, 182, 212, 0.3)'
-                }}
+                onClick={() => fileInputRef.current.click()}
+                className="btn btn-secondary"
+                style={{ flex: 1, width: '100%', fontSize: '0.78rem', padding: '10px 8px' }}
                 disabled={scanning}
               >
-                {isRecording ? (
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
-                    <span style={{
-                      width: '8px',
-                      height: '8px',
-                      borderRadius: '50%',
-                      backgroundColor: '#fff',
-                      animation: 'pulse 1s infinite'
-                    }}></span>
-                    Stop Mic
-                  </span>
-                ) : (
-                  "🎙️ Record Live Speech"
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={triggerAnalyze}
-                className="btn btn-primary"
-                style={{ flex: 1, fontSize: '0.8rem', padding: '8px 12px' }}
-                disabled={scanning || isRecording}
-              >
-                Scan Target
+                {t.uploadAudioBtn}
               </button>
             </div>
 
@@ -661,45 +746,45 @@ export default function VoiceAnalyzer() {
                 <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
                   {file}
                 </span>
-                
+
                 <button
                   type="button"
                   onClick={togglePlayback}
                   className="btn btn-secondary"
                   style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                  disabled={scanning || isRecording}
+                  disabled={scanning}
                 >
                   {isPlaying ? 'Pause' : '▶️ Play'}
                 </button>
               </div>
             )}
 
-            {/* Presets */}
+            {/* Demo samples (simulated) */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
-              <div style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600 }}>Test Quick presets:</div>
+              <div style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600 }}>{t.demoPresetsHeader}</div>
               <button
                 className="btn btn-secondary"
-                onClick={() => loadPreset('clone1')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.78rem', padding: '8px 12px' }}
-                disabled={scanning || isRecording}
+                onClick={() => loadPreset('synthetic')}
+                style={{ justifyContent: 'flex-start', fontSize: '0.75rem', padding: '6px 10px' }}
+                disabled={scanning}
               >
-                ⚠️ Kidnap Scam (Grandchild Clone)
+                ⚠️ Simulated Synthetic Voice
               </button>
               <button
                 className="btn btn-secondary"
-                onClick={() => loadPreset('noisy_clone')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.78rem', padding: '8px 12px', color: 'var(--status-warning)' }}
-                disabled={scanning || isRecording}
+                onClick={() => loadPreset('noisy')}
+                style={{ justifyContent: 'flex-start', fontSize: '0.75rem', padding: '6px 10px', color: 'var(--status-warning)' }}
+                disabled={scanning}
               >
-                ⚠️ Noisy Voicemail (Low Confidence &lt; 80%)
+                ⚠️ Simulated Noisy Voicemail
               </button>
               <button
                 className="btn btn-secondary"
                 onClick={() => loadPreset('clean')}
-                style={{ justifyContent: 'flex-start', fontSize: '0.78rem', padding: '8px 12px' }}
-                disabled={scanning || isRecording}
+                style={{ justifyContent: 'flex-start', fontSize: '0.75rem', padding: '6px 10px' }}
+                disabled={scanning}
               >
-                ✅ Clean Voice Message (Human)
+                ✅ Simulated Natural Voice
               </button>
             </div>
           </div>
@@ -707,7 +792,7 @@ export default function VoiceAnalyzer() {
 
         {/* Right column: Spectrogram log & findings */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          
+
           {logs.length > 0 && (
             <div style={{
               background: '#040711',
@@ -726,11 +811,11 @@ export default function VoiceAnalyzer() {
               {logs.map((log, index) => (
                 <div key={index}>{log}</div>
               ))}
-              {scanning && <div style={{ color: 'var(--accent-cyan)', animation: 'pulse 0.8s infinite' }}>█ Analyzing spectral peaks...</div>}
+              {scanning && <div style={{ color: 'var(--accent-cyan)', animation: 'pulse 0.8s infinite' }}>█ Analyzing audio spectrum...</div>}
             </div>
           )}
 
-          {!file && !isRecording && (
+          {!file && (
             <div style={{
               border: '1px dashed var(--border-color)',
               borderRadius: '12px',
@@ -744,99 +829,77 @@ export default function VoiceAnalyzer() {
               height: '100%',
               background: 'rgba(255,255,255,0.01)'
             }}>
-              Select biometric target or click 'Record Live Speech' to start recording audio.
+              Upload an audio file to analyze voice signatures.
             </div>
           )}
 
           {result && !scanning && (
-            <div className={`glass-card ${result.confidence < 80 ? 'warning-glow' : result.safe ? 'safe-glow' : 'danger-glow'}`} style={{
+            <div className={`glass-card ${result.isOffline ? 'warning-glow' : result.safe ? 'safe-glow' : result.verdictLabel === t.verdictVoiceInconclusive ? 'warning-glow' : 'danger-glow'}`} style={{
               borderLeft: '4px solid',
-              borderColor: result.confidence < 80 ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : 'var(--status-danger)',
+              borderColor: result.isOffline ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : result.verdictLabel === t.verdictVoiceInconclusive ? 'var(--status-warning)' : 'var(--status-danger)',
               padding: '20px',
               animation: 'fadeIn 0.3s ease-out'
             }}>
-              {result.confidence < 80 ? (
-                /* Warning Threshold Verdict Bypass */
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                    <span className="badge badge-warning">INSUFFICIENT DATA</span>
-                    <span style={{ fontSize: '0.8rem', color: '#64748b', fontFamily: 'var(--font-mono)' }}>Quality Check: Low Confidence</span>
-                  </div>
-                  <h4 style={{ fontSize: '1.25rem', color: 'var(--status-warning)', marginBottom: '8px' }}>
-                    Insufficient evidence. Manual verification recommended.
-                  </h4>
-                  <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: 1.5, marginBottom: '16px' }}>
-                    The scan confidence score is too low ({result.confidence}%) to formulate an accurate safety index. This is usually caused by excessive background noise or a sample that is too short. Verify the speaker's identity using a pre-arranged secret question.
-                  </p>
+              {/* Disclaimer near Verdict */}
+              <div style={{ padding: '8px 12px', background: 'rgba(6, 182, 212, 0.08)', border: '1px solid rgba(6, 182, 212, 0.2)', borderRadius: '6px', fontSize: '0.78rem', color: '#e2e8f0', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>💡</span>
+                <span>{t.voiceDisclaimer}</span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span className={`badge ${result.isOffline ? 'badge-warning' : result.safe ? 'badge-safe' : result.verdictLabel === t.verdictVoiceInconclusive ? 'badge-warning' : 'badge-danger'}`}>
+                    {result.verdictLabel}
+                  </span>
+
+                  {/* Simulated Example Badge */}
+                  {result.isSimulated && (
+                    <span className="badge badge-cyan" style={{ border: '1px solid var(--accent-cyan)' }}>
+                      {t.simulatedBadge}
+                    </span>
+                  )}
+
+                  {result.confidencePct !== null && result.confidencePct !== undefined && (
+                    <span style={{ fontSize: '0.85rem', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
+                      {t.confidenceLabel} <strong style={{ color: '#fff' }}>{result.confidencePct}%</strong>
+                    </span>
+                  )}
                 </div>
-              ) : (
-                /* High Confidence Verdict Details */
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span className={`badge ${result.safe ? 'badge-safe' : 'badge-danger'}`}>
-                          {result.safe ? 'Human Verified' : 'Deepfake Cloned'}
-                        </span>
-                        <span style={{ fontSize: '0.8rem', color: '#64748b', fontFamily: 'var(--font-mono)' }}>Scan Confidence: {result.confidence}%</span>
-                      </div>
-                      <h4 style={{ fontSize: '1.25rem', marginTop: '6px', color: result.safe ? '#fff' : 'var(--status-danger)' }}>
-                        {result.safe ? "Organic Speech Confirmed" : "AI Speech Clone Identified"}
-                      </h4>
-                    </div>
 
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '2px' }}>
-                      <span style={{ fontSize: '1.75rem', fontWeight: 'bold', color: result.safe ? 'var(--status-safe)' : 'var(--status-danger)', fontFamily: 'var(--font-mono)' }}>
-                        {result.probability}
-                      </span>
-                      <span style={{ fontSize: '0.8rem', color: '#64748b', fontFamily: 'var(--font-mono)' }}>% DEEPFAKE</span>
-                    </div>
-                  </div>
+                {result.score !== null && result.score !== undefined ? (
+                  <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: result.safe ? 'var(--status-safe)' : 'var(--status-danger)', fontFamily: 'var(--font-mono)' }}>
+                    {result.score}% RISK
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--status-warning)', fontFamily: 'var(--font-mono)' }}>
+                    OFFLINE
+                  </span>
+                )}
+              </div>
 
-                  <p style={{ fontSize: '0.9rem', color: '#cbd5e1', marginBottom: '16px', lineHeight: 1.5 }}>
-                    {result.verdict}
-                  </p>
+              <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: 1.5, marginBottom: '16px' }}>
+                {result.verdict}
+              </p>
+
+              {/* Key Reasons / Anomalies List */}
+              {result.anomalies && result.anomalies.length > 0 && (
+                <div style={{ marginBottom: '16px', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '6px' }}>{t.keyReasonsHeader}</div>
+                  <ul style={{ paddingLeft: '18px', fontSize: '0.75rem', color: '#94a3b8', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {result.anomalies.map((item, idx) => (
+                      <li key={idx} style={{ listStyleType: 'square' }}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
-              {/* Common Biometric Telemetry */}
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                gap: '16px',
-                borderTop: '1px solid var(--border-color)',
-                paddingTop: '16px',
-                marginBottom: '16px'
-              }}>
-                <div>
-                  <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>Authenticity Score</div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: result.safe ? 'var(--status-safe)' : '#fff', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
-                    {result.authenticity}%
+              {/* 5-Layer Audio Analysis Matrix Grid Display */}
+              {result.engines && result.engines.length > 0 && (
+                <div style={{ background: 'rgba(0,0,0,0.25)', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {t.audioAnalysisMatrix || "Web Audio API Audio Analysis Matrix"}
                   </div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>Biometric Signature Vector</div>
-                  <div style={{ fontSize: '0.85rem', color: '#cbd5e1', marginTop: '2px' }}>{result.vector}</div>
-                </div>
-              </div>
-
-              {/* Biometric Anomalies */}
-              <div style={{ marginBottom: '16px', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px' }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px' }}>Biometric Anomalies Explored:</div>
-                <ul style={{ paddingLeft: '14px', fontSize: '0.72rem', color: '#64748b', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  {result.anomalies.map((item, idx) => (
-                    <li key={idx} style={{ listStyleType: 'circle' }}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* 7-Layer Matrix Grid Display */}
-              {result.engines && (
-                <div style={{ background: 'rgba(0,0,0,0.25)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Multi-Layer Biometric Verification (7 Layers)
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px' }}>
                     {result.engines.map((eng, idx) => {
                       let badgeColor = 'var(--status-safe)';
                       let badgeBg = 'rgba(16, 185, 129, 0.15)';
@@ -846,12 +909,15 @@ export default function VoiceAnalyzer() {
                       } else if (eng.status === 'FAIL') {
                         badgeColor = 'var(--status-danger)';
                         badgeBg = 'rgba(244, 63, 94, 0.15)';
+                      } else if (eng.status === 'INFO' || eng.status === 'NOT MEASURED') {
+                        badgeColor = '#94a3b8';
+                        badgeBg = 'rgba(148, 163, 184, 0.15)';
                       }
 
                       return (
-                        <div key={idx} style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div key={idx} style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '8px 10px', borderRadius: '6px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: '#fff' }}>{eng.name}</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#fff' }}>{eng.name}</span>
                             <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', color: badgeColor, backgroundColor: badgeBg }}>
                               {eng.status}
                             </span>
@@ -863,6 +929,29 @@ export default function VoiceAnalyzer() {
                   </div>
                 </div>
               )}
+
+              {/* Recommended Safety Steps Section */}
+              <div style={{ marginTop: '16px', background: 'rgba(0,0,0,0.25)', padding: '14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <div style={{
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  color: result.isOffline ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : result.verdictLabel === t.verdictVoiceInconclusive ? 'var(--status-warning)' : 'var(--status-danger)',
+                  marginBottom: '10px',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  🛡️ {t.voiceSafetyHeader}
+                </div>
+                <ul style={{ paddingLeft: '18px', margin: 0, display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: '#e2e8f0' }}>
+                  {t.voiceSafetySteps.filter(step => step && step.trim().length > 0).map((step, idx) => (
+                    <li key={idx} style={{ lineHeight: 1.45 }}>{step}</li>
+                  ))}
+                </ul>
+              </div>
+
             </div>
           )}
         </div>

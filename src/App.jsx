@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import RadarDashboard from './components/RadarDashboard';
@@ -6,11 +6,27 @@ import AnalyzerSuite from './components/AnalyzerSuite';
 import ReportScamForm from './components/ReportScamForm';
 import SocialFeedDashboard from './components/SocialFeedDashboard';
 import ModelCalibration from './components/ModelCalibration';
+import BenchmarkRunner from './components/BenchmarkRunner';
 import { initialRecentReports } from './mockData';
 import './App.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window !== 'undefined' && (window.location.pathname === '/benchmark' || window.location.hash === '#benchmark')) {
+      return 'benchmark';
+    }
+    return 'dashboard';
+  });
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (window.location.hash === '#benchmark' || window.location.pathname === '/benchmark') {
+        setActiveTab('benchmark');
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
   const [reports, setReports] = useState(initialRecentReports);
   const [prefilledContent, setPrefilledContent] = useState('');
   const [prefilledTab, setPrefilledTab] = useState('url');
@@ -81,6 +97,10 @@ export default function App() {
 
           {activeTab === 'calibration' && (
             <ModelCalibration />
+          )}
+
+          {activeTab === 'benchmark' && (
+            <BenchmarkRunner />
           )}
         </main>
       </div>

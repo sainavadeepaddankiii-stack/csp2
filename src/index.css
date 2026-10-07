@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Telugu:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
   --bg-primary: #070a13;
@@ -22,8 +22,8 @@
   --status-danger-glow: rgba(244, 63, 94, 0.35);
 
   /* Fonts */
-  --font-sans: 'Inter', sans-serif;
-  --font-display: 'Space Grotesk', sans-serif;
+  --font-sans: 'Inter', 'Noto Sans Telugu', 'Nirmala UI', sans-serif;
+  --font-display: 'Space Grotesk', 'Noto Sans Telugu', 'Nirmala UI', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
   /* Layout */

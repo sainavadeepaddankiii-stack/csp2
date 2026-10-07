@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { translations } from '../i18n';
 
 const VERIFIED_WHITELIST = [
   'google.com', 'google.co.in', 'gmail.com', 'youtube.com', 'wikipedia.org', 
@@ -19,11 +20,13 @@ const BRAND_KEYWORDS = {
   Microsoft: ['microsoft', 'office-login', 'outlook-verify']
 };
 
-export default function URLAnalyzer() {
+export default function URLAnalyzer({ lang = 'en' }) {
   const [url, setUrl] = useState('');
   const [scanning, setScanning] = useState(false);
   const [logs, setLogs] = useState([]);
   const [result, setResult] = useState(null);
+
+  const t = translations[lang] || translations.en;
 
   const addLog = (text, delay) => {
     return new Promise((resolve) => {
@@ -268,19 +271,44 @@ export default function URLAnalyzer() {
     }
     engines.push({ name: 'HTML/JS Behavioral Scan', status: behaviorStatus, details: behaviorDesc, score: behaviorScore, weight: 0.05 });
 
+    // Count status metrics from engine checks
+    const failCount = engines.filter(eng => eng.status === 'FAIL').length;
+    const warnCount = engines.filter(eng => eng.status === 'WARN').length;
+    const unavailCount = engines.filter(eng => eng.status === 'UNAVAILABLE' || eng.status === 'INCONCLUSIVE').length;
+
     // Calculate weighted Risk Score
     const totalWeightedScore = engines.reduce((sum, eng) => sum + (eng.score * eng.weight), 0);
-    const calculatedScore = Math.min(Math.round(totalWeightedScore), 99);
+    let calculatedScore = Math.min(Math.round(totalWeightedScore), 99);
+    if (brandMimicked || failCount >= 4) {
+      calculatedScore = Math.max(calculatedScore, 88);
+    }
 
-    // Calculate calibrated Confidence Score
-    let confidence = 98;
-    if (!dnsResolves) {
-      confidence -= 25; 
+    let decision = "LOW RISK";
+    let confidence = 95;
+    let safe = true;
+    let isInsufficientData = false;
+
+    if (unavailCount >= 6) {
+      decision = "INSUFFICIENT DATA";
+      confidence = 60;
+      safe = false;
+      isInsufficientData = true;
+    } else if (brandMimicked || failCount >= 4 || calculatedScore >= 75) {
+      decision = "HIGH RISK - LIKELY PHISHING";
+      confidence = Math.min(98, Math.max(90, 90 + Math.round(failCount * 1.2)));
+      safe = false;
+      isInsufficientData = false;
+    } else if (failCount >= 2 || warnCount >= 1 || calculatedScore >= 40) {
+      decision = "SUSPICIOUS";
+      confidence = 88;
+      safe = false;
+      isInsufficientData = false;
+    } else {
+      decision = "LOW RISK";
+      confidence = 95;
+      safe = true;
+      isInsufficientData = false;
     }
-    if (!isWhitelisted && !brandMimicked && dnsResolves) {
-      confidence -= 12; 
-    }
-    confidence = Math.max(Math.min(confidence, 99), 50);
 
     // Dynamic Reasons
     const reasons = [];
@@ -300,14 +328,13 @@ export default function URLAnalyzer() {
       reasons.push("No threat markers or suspicious structural indicators detected across any verification layer.");
     }
 
-    const decision = calculatedScore >= 75 ? 'High Risk' : calculatedScore >= 40 ? 'Medium Risk' : 'Low Risk';
-
     setResult({
       domain: hostname,
       score: calculatedScore,
       confidence,
       decision,
-      safe: calculatedScore < 40 && confidence >= 80,
+      safe,
+      isInsufficientData,
       engines,
       reasons,
       issuer: sslStatus === 'PASS' ? 'DigiCert High Assurance EV CA' : 'Unsecured Protocol',
@@ -320,14 +347,46 @@ export default function URLAnalyzer() {
     setScanning(false);
   };
 
+  const getVerdictBadgeLabel = () => {
+    if (!result) return '';
+    if (result.isInsufficientData) return t.verdictInsufficientData;
+    if (result.decision === "HIGH RISK - LIKELY PHISHING") return t.verdictHighRisk;
+    if (result.decision === "SUSPICIOUS") return t.verdictSuspicious;
+    return t.verdictLowRisk;
+  };
+
+  const getVerdictTitleText = () => {
+    if (!result) return '';
+    if (result.isInsufficientData) return t.titleInsufficientData;
+    if (result.safe) return t.titleLowRisk;
+    if (result.decision.includes('SUSPICIOUS')) return t.titleSuspicious;
+    return t.titleHighRisk;
+  };
+
+  const getSimpleSummaryText = () => {
+    if (!result) return '';
+    if (result.isInsufficientData) return t.simpleSummaryInsufficientData;
+    if (result.safe) return t.simpleSummaryLowRisk;
+    if (result.decision.includes('SUSPICIOUS')) return t.simpleSummarySuspicious;
+    return t.simpleSummaryHighRisk;
+  };
+
+  const getSafetyStepsList = () => {
+    if (!result) return [];
+    if (result.isInsufficientData) return t.safetyInsufficient;
+    if (result.safe) return t.safetyLowRisk;
+    if (result.decision.includes('SUSPICIOUS')) return t.safetySuspicious;
+    return t.safetyHighRisk;
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
         <h3 style={{ fontSize: '1.2rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--accent-cyan)' }}>//</span> AI Domain & Link Analyzer
+          <span style={{ color: 'var(--accent-cyan)' }}>//</span> {t.urlHeaderTitle}
         </h3>
         <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-          Detects credential harvesters, lookalike brand domains, unsecured connections, and high-risk domain registries.
+          {t.urlHeaderDesc}
         </p>
       </div>
 
@@ -335,7 +394,7 @@ export default function URLAnalyzer() {
         <input
           type="text"
           className="form-control"
-          placeholder="Paste URL (e.g. secure-paypal-login.com or wikipedia.org)"
+          placeholder={t.urlInputPlaceholder}
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           disabled={scanning}
@@ -347,7 +406,7 @@ export default function URLAnalyzer() {
           disabled={scanning || !url.trim()}
           style={{ minWidth: '130px' }}
         >
-          {scanning ? 'Scanning...' : 'Analyze URL'}
+          {scanning ? t.urlScanningBtn : t.urlAnalyzeBtn}
         </button>
       </form>
 
@@ -380,25 +439,25 @@ export default function URLAnalyzer() {
 
       {/* Results screen */}
       {result && !scanning && (
-        <div className={`glass-card ${result.confidence < 80 ? 'warning-glow' : result.safe ? 'safe-glow' : 'danger-glow'}`} style={{
+        <div className={`glass-card ${result.isInsufficientData ? 'warning-glow' : result.safe ? 'safe-glow' : 'danger-glow'}`} style={{
           borderLeft: '4px solid',
-          borderColor: result.confidence < 80 ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : 'var(--status-danger)',
+          borderColor: result.isInsufficientData ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : 'var(--status-danger)',
           padding: '20px',
           animation: 'fadeIn 0.3s ease-out'
         }}>
           
-          {result.confidence < 80 ? (
+          {result.isInsufficientData ? (
             /* Warning Threshold Verdict Bypass */
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                <span className="badge badge-warning">INSUFFICIENT DATA</span>
+                <span className="badge badge-warning">{t.verdictInsufficientData}</span>
                 <span style={{ fontSize: '0.9rem', color: '#64748b', fontFamily: 'var(--font-mono)' }}>{result.domain}</span>
               </div>
               <h4 style={{ fontSize: '1.25rem', color: 'var(--status-warning)', marginBottom: '8px' }}>
-                Insufficient evidence. Manual verification recommended.
+                {t.titleInsufficientData}
               </h4>
-              <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: 1.5, marginBottom: '16px' }}>
-                We could not establish a high-confidence verdict for this domain (Confidence: {result.confidence}%). This frequently happens with unregistered domains, unreachable servers, or brand new sites lacking history. Do not enter credentials.
+              <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: 1.5, marginBottom: '12px' }}>
+                Confidence rating: {result.confidence}%.
               </p>
             </div>
           ) : (
@@ -406,14 +465,14 @@ export default function URLAnalyzer() {
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span className={`badge ${result.safe ? 'badge-safe' : 'badge-danger'}`}>
-                      {result.decision}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <span className={`badge ${result.safe ? 'badge-safe' : result.decision.includes('SUSPICIOUS') ? 'badge-warning' : 'badge-danger'}`}>
+                      {getVerdictBadgeLabel()}
                     </span>
                     <span style={{ fontSize: '0.9rem', color: '#64748b', fontFamily: 'var(--font-mono)' }}>{result.domain}</span>
                   </div>
-                  <h4 style={{ fontSize: '1.25rem', marginTop: '6px', color: result.safe ? '#fff' : 'var(--status-danger)' }}>
-                    {result.safe ? "Domain Verified Clean" : "Malicious Domain Spoof Detected"}
+                  <h4 style={{ fontSize: '1.25rem', marginTop: '6px', color: result.safe ? '#fff' : result.decision.includes('SUSPICIOUS') ? 'var(--status-warning)' : 'var(--status-danger)' }}>
+                    {getVerdictTitleText()}
                   </h4>
                 </div>
 
@@ -446,10 +505,16 @@ export default function URLAnalyzer() {
                   </div>
                 </div>
               </div>
-              
-              <p style={{ fontSize: '0.9rem', color: '#cbd5e1', marginBottom: '16px', lineHeight: 1.5 }}>
-                Decision details: Analyzed across 10 security vectors. Confidence rating: <strong>{result.confidence}%</strong>.
-              </p>
+
+              {/* In Simple Words Summary */}
+              <div style={{ marginBottom: '16px', background: 'rgba(6, 182, 212, 0.08)', border: '1px solid rgba(6, 182, 212, 0.2)', padding: '12px 14px', borderRadius: '8px' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '4px' }}>
+                  💡 {t.simpleSummaryLabel}
+                </div>
+                <div style={{ fontSize: '0.85rem', color: '#e2e8f0', lineHeight: 1.45 }}>
+                  {getSimpleSummaryText()}
+                </div>
+              </div>
             </div>
           )}
 
@@ -462,16 +527,16 @@ export default function URLAnalyzer() {
             paddingTop: '16px'
           }}>
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>SSL Certificate Issuer</div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>{t.networkDetailsSsl}</div>
               <div style={{ fontSize: '0.85rem', color: '#e2e8f0', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>{result.issuer}</div>
             </div>
             <div>
-              <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>Domain Registration Status</div>
+              <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>{t.networkDetailsAge}</div>
               <div style={{ fontSize: '0.85rem', color: '#e2e8f0', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>{result.age}</div>
             </div>
             {result.ip && (
               <div>
-                <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>Server IP & Hosting Geolocation</div>
+                <div style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>{t.networkDetailsIp}</div>
                 <div style={{ fontSize: '0.85rem', color: '#e2e8f0', fontFamily: 'var(--font-mono)', marginTop: '2px' }}>
                   {result.ip} ({result.location || 'Unknown Location'})
                 </div>
@@ -482,7 +547,7 @@ export default function URLAnalyzer() {
           {/* Reasons Breakdown */}
           {result.reasons && result.reasons.length > 0 && (
             <div style={{ marginTop: '16px', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px' }}>
-              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--status-warning)', marginBottom: '6px' }}>Threat Breakdown Details:</div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--status-warning)', marginBottom: '6px' }}>{t.threatBreakdownHeader}</div>
               <ul style={{ paddingLeft: '20px', fontSize: '0.8rem', color: '#94a3b8', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {result.reasons.map((reason, idx) => (
                   <li key={idx} style={{ listStyleType: 'square' }}>{reason}</li>
@@ -491,11 +556,11 @@ export default function URLAnalyzer() {
             </div>
           )}
 
-          {/* Multi-Engine Matrix Grid Display */}
+          {/* Multi-Engine Matrix Grid Display (Kept in English per Rule 6) */}
           {result.engines && (
             <div style={{ marginTop: '20px', background: 'rgba(0,0,0,0.25)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Multi-Engine Verification Matrix (10 Layers)
+                {t.multiEngineHeader}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
                 {result.engines.map((eng, idx) => {
@@ -522,6 +587,30 @@ export default function URLAnalyzer() {
                   );
                 })}
               </div>
+            </div>
+          )}
+
+          {/* Recommended Safety Steps Section */}
+          {result && (
+            <div style={{ marginTop: '20px', background: 'rgba(0,0,0,0.25)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+              <div style={{
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                color: result.isInsufficientData ? 'var(--status-warning)' : result.safe ? 'var(--status-safe)' : result.decision.includes('SUSPICIOUS') ? 'var(--status-warning)' : 'var(--status-danger)',
+                marginBottom: '12px',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                🛡️ {t.safetyStepsHeader}
+              </div>
+              <ul style={{ paddingLeft: '20px', margin: 0, display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem', color: '#e2e8f0' }}>
+                {getSafetyStepsList().map((step, idx) => (
+                  <li key={idx} style={{ lineHeight: 1.45 }}>{step}</li>
+                ))}
+              </ul>
             </div>
           )}
 

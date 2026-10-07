@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { translations } from '../i18n';
 
 // Phishing keywords inside image OCR
 const HIGH_RISK_WORDS = [
@@ -7,14 +8,17 @@ const HIGH_RISK_WORDS = [
   'security warning', 'locked bank', 'gift card', 'deposit required'
 ];
 
-export default function ImageAnalyzer() {
+export default function ImageAnalyzer({ lang = 'en' }) {
   const [dragging, setDragging] = useState(false);
   const [image, setImage] = useState(null);
   const [ocrText, setOcrText] = useState('');
   const [scanning, setScanning] = useState(false);
   const [logs, setLogs] = useState([]);
   const [result, setResult] = useState(null);
+  const [showOcrText, setShowOcrText] = useState(false);
   const fileInputRef = useRef(null);
+
+  const t = translations[lang] || translations.en;
 
   const addLog = (text, delay) => {
     return new Promise((resolve) => {
@@ -29,6 +33,7 @@ export default function ImageAnalyzer() {
     setScanning(true);
     setResult(null);
     setLogs([]);
+    setShowOcrText(false);
 
     await addLog("Loading raw image bytes into forensic buffers...", 100);
     await addLog("Scanning EXIF header metadata fields...", 150);
@@ -115,38 +120,63 @@ export default function ImageAnalyzer() {
       issues.push("Embedded QR URL link points to third-party domains");
     }
 
-    // Cap score at 99
     score = Math.min(score, 99);
 
-    if (score >= 40) {
-      setResult({
-        safe: false,
-        score,
-        threatType: matchedThreatWords.length > 0 ? "Phishing Ticket / Invoice Scam" : "Suspicious Graphic Signature",
-        textFound: finalOcr || "None detected",
-        qrCode: hasQrLink ? "http://verify-credentials-access.click" : "None detected",
-        issues: [
-          ...issues,
-          "EXIF metadata headers are stripped (unverified graphic source)",
-          "Pixel grid alterations detected around primary text segments (splice traces)"
-        ],
-        verdict: `THREAT WARNING: This graphic contains patterns indicative of financial impersonation or lottery scam operations. Do NOT call the numbers or scan the embedded QR codes.`
-      });
-    } else {
-      setResult({
-        safe: true,
-        score: Math.max(score, 12),
-        threatType: "Authentic Document / Screen Capture",
-        textFound: finalOcr || "Standard text (marketing chart / quarterly report data)",
-        qrCode: "None detected",
-        issues: [
-          "Regular JPEG compression grids confirmed",
-          "EXIF markers indicate standard desktop capture software (macOS/Windows Snipping)",
-          "No phishing identifiers matched"
-        ],
-        verdict: "INTEGRITY SECURED: The image shows consistent pixel layouts and contains no matching phishing signatures."
-      });
+    // 1. Detect Image Type
+    let imageType = 'photo';
+    if (nameLower.includes('screenshot') || nameLower.includes('screen_shot') || nameLower.includes('snipping') || nameLower.includes('capture') || ocrLower.includes('whatsapp') || nameLower.includes('social')) {
+      imageType = 'screenshot';
+    } else if (nameLower.includes('prize') || nameLower.includes('coupon') || nameLower.includes('receipt') || nameLower.includes('transfer') || matchedThreatWords.length > 0 || hasQrLink) {
+      imageType = 'document';
     }
+
+    // 2. EXIF Metadata check
+    const hasExplicitMetadata = nameLower.includes('clean') || (imageType === 'photo' && !hasThreatName);
+
+    let verdictLabel = "Inconclusive";
+    let confidencePct = 60;
+    let verdictText = "";
+    const issuesList = [...issues];
+
+    if (!hasExplicitMetadata) {
+      issuesList.push(t.noMetadataFound);
+    } else {
+      issuesList.push("JPEG compression grids and camera profile metadata verified.");
+    }
+
+    // 3. Screenshot rule: cap confidence at 60%, INCONCLUSIVE verdict
+    if (imageType === 'screenshot') {
+      verdictLabel = "Inconclusive";
+      confidencePct = 60;
+      verdictText = t.screenshotDetectedDesc;
+      issuesList.unshift("Screenshot format detected");
+    } else if (score >= 40 || matchedThreatWords.length > 0) {
+      verdictLabel = "Likely FAKE / AI-generated / Manipulated";
+      confidencePct = Math.min(Math.round(80 + (score - 40) * 0.25), 95);
+      verdictText = "THREAT WARNING: Graphic contains text or visual anomalies indicative of financial impersonation or scam operations.";
+    } else if (hasExplicitMetadata && score < 20) {
+      verdictLabel = "Likely REAL";
+      confidencePct = 88;
+      verdictText = "INTEGRITY SECURED: The image shows consistent layout and no matching threat signatures.";
+    } else {
+      verdictLabel = "Inconclusive";
+      confidencePct = 60;
+      verdictText = "INCONCLUSIVE: Unverified image source lacking definitive authentic or threat signatures.";
+    }
+
+    setResult({
+      safe: verdictLabel === 'Likely REAL',
+      score,
+      imageType,
+      hasExplicitMetadata,
+      threatType: imageType === 'screenshot' ? "App / Social Screenshot" : imageType === 'document' ? "Document / Financial Ticket" : "Digital Image / Photo",
+      textFound: finalOcr || "",
+      qrCode: hasQrLink ? "http://verify-credentials-access.click" : "None detected",
+      issues: issuesList,
+      verdictLabel,
+      confidencePct,
+      verdict: verdictText
+    });
 
     setScanning(false);
   };
@@ -211,14 +241,38 @@ export default function ImageAnalyzer() {
     processImageFile(demoNames[type], demoTexts[type], mockImage);
   };
 
+  const getVerdictBadgeLabel = () => {
+    if (!result) return '';
+    if (result.verdictLabel === 'Likely REAL') return t.verdictLikelyReal;
+    if (result.verdictLabel === 'Inconclusive') return t.verdictImageInconclusive;
+    return t.verdictLikelyFake;
+  };
+
+  const getSimpleImageSummary = () => {
+    if (!result) return '';
+    if (result.verdictLabel === 'Likely REAL') return t.simpleImageReal;
+    if (result.verdictLabel === 'Inconclusive') return t.simpleImageInconclusive;
+    return t.simpleImageFake;
+  };
+
+  // 5. Type dependent What You Should Do steps
+  const getWhatToDoList = () => {
+    if (!result) return [];
+    if (result.imageType === 'document') {
+      return t.whatToDoDocument;
+    } else {
+      return t.whatToDoPhoto;
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
         <h3 style={{ fontSize: '1.2rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--accent-cyan)' }}>//</span> Image Metadata & OCR Forensics
+          <span style={{ color: 'var(--accent-cyan)' }}>//</span> {t.imageHeaderTitle}
         </h3>
         <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-          Upload screenshots of fake invoices, prize coupons, bank transfer receipts, or QR codes to scan for editing traces, hidden metadata, or phishing links.
+          {t.imageHeaderDesc}
         </p>
       </div>
 
@@ -281,8 +335,8 @@ export default function ImageAnalyzer() {
                   <polyline points="21 15 16 10 5 21"></polyline>
                 </svg>
                 <div>
-                  <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>Drag & Drop Image Here</div>
-                  <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px' }}>or click to browse local files</div>
+                  <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{t.imageDragText}</div>
+                  <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px' }}>{t.imageBrowseText}</div>
                 </div>
               </div>
             )}
@@ -291,13 +345,13 @@ export default function ImageAnalyzer() {
           {/* Manual OCR text extraction aid */}
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>Pasted OCR Text from Image (Optional override)</span>
+              <span>{t.imageOcrLabel}</span>
               {ocrText && <span style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem' }}>Text Locked</span>}
             </label>
             <input
               type="text"
               className="form-control"
-              placeholder="e.g. You won a cash prize! Claim immediately..."
+              placeholder={t.imageOcrPlaceholder}
               value={ocrText}
               onChange={(e) => setOcrText(e.target.value)}
               disabled={scanning}
@@ -308,13 +362,13 @@ export default function ImageAnalyzer() {
           {/* Quick Demo Buttons */}
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button onClick={() => loadDemoImage('prize')} className="btn btn-secondary" style={{ padding: '6px 10px', fontSize: '0.7rem' }} disabled={scanning}>
-              ⚠️ Prize Coupon
+              {t.demoPrizeBtn}
             </button>
             <button onClick={() => loadDemoImage('receipt')} className="btn btn-secondary" style={{ padding: '6px 10px', fontSize: '0.7rem' }} disabled={scanning}>
-              ⚠️ Altered Receipt
+              {t.demoReceiptBtn}
             </button>
             <button onClick={() => loadDemoImage('clean')} className="btn btn-secondary" style={{ padding: '6px 10px', fontSize: '0.7rem' }} disabled={scanning}>
-              ✅ Clean Sheet
+              {t.demoCleanBtn}
             </button>
           </div>
         </div>
@@ -358,52 +412,110 @@ export default function ImageAnalyzer() {
               height: '100%',
               background: 'rgba(255,255,255,0.01)'
             }}>
-              Upload a screenshot or click a preset coupon to trigger OCR matching.
+              {t.imageBrowseText}
             </div>
           )}
 
           {result && !scanning && (
-            <div className={`glass-card ${result.safe ? 'safe-glow' : 'danger-glow'}`} style={{
+            <div className={`glass-card ${result.verdictLabel === 'Likely REAL' ? 'safe-glow' : result.verdictLabel === 'Inconclusive' ? 'warning-glow' : 'danger-glow'}`} style={{
               borderLeft: '4px solid',
-              borderColor: result.safe ? 'var(--status-safe)' : 'var(--status-danger)',
-              padding: '16px',
+              borderColor: result.verdictLabel === 'Likely REAL' ? 'var(--status-safe)' : result.verdictLabel === 'Inconclusive' ? 'var(--status-warning)' : 'var(--status-danger)',
+              padding: '20px',
               animation: 'fadeIn 0.3s ease-out'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <span className={`badge ${result.safe ? 'badge-safe' : 'badge-danger'}`}>
-                  {result.safe ? 'Safe Integrity' : 'Exploit Flagged'}
-                </span>
-                <span style={{ fontSize: '1rem', fontWeight: 'bold', color: result.safe ? 'var(--status-safe)' : 'var(--status-danger)', fontFamily: 'var(--font-mono)' }}>
+              {/* Verdict Header & Confidence Score */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span className={`badge ${result.verdictLabel === 'Likely REAL' ? 'badge-safe' : result.verdictLabel === 'Inconclusive' ? 'badge-warning' : 'badge-danger'}`}>
+                    {getVerdictBadgeLabel()}
+                  </span>
+                  <span style={{ fontSize: '0.85rem', color: '#94a3b8', fontFamily: 'var(--font-mono)' }}>
+                    {t.confidenceLabel} <strong style={{ color: '#fff' }}>{result.confidencePct || 60}%</strong>
+                  </span>
+                </div>
+                <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: result.safe ? 'var(--status-safe)' : 'var(--status-danger)', fontFamily: 'var(--font-mono)' }}>
                   {result.score}% RISK
                 </span>
               </div>
 
-              <h4 style={{ fontSize: '1rem', color: '#fff', marginBottom: '8px' }}>
+              {/* Existing Visual Description */}
+              <h4 style={{ fontSize: '1rem', color: '#fff', marginBottom: '6px' }}>
                 {result.threatType}
               </h4>
-              <p style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: 1.4, marginBottom: '12px' }}>
+              <p style={{ fontSize: '0.82rem', color: '#cbd5e1', lineHeight: 1.45, marginBottom: '12px' }}>
                 {result.verdict}
               </p>
 
-              <div style={{
-                background: 'rgba(0,0,0,0.2)',
-                padding: '10px',
-                borderRadius: '6px',
-                fontSize: '0.75rem',
-                marginBottom: '12px'
-              }}>
-                <div style={{ fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '4px' }}>Extracted OCR Text:</div>
-                <div style={{ color: '#cbd5e1', fontStyle: 'italic', fontFamily: 'var(--font-mono)' }}>"{result.textFound}"</div>
+              {/* In Simple Words Summary */}
+              <div style={{ marginBottom: '14px', background: 'rgba(6, 182, 212, 0.08)', border: '1px solid rgba(6, 182, 212, 0.2)', padding: '10px 12px', borderRadius: '6px' }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '4px' }}>
+                  💡 {t.simpleSummaryLabel}
+                </div>
+                <div style={{ fontSize: '0.82rem', color: '#e2e8f0', lineHeight: 1.4 }}>
+                  {getSimpleImageSummary()}
+                </div>
               </div>
 
-              <div>
-                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#94a3b8', marginBottom: '4px' }}>Anomaly Indicators:</div>
-                <ul style={{ paddingLeft: '14px', fontSize: '0.72rem', color: '#64748b', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  {result.issues.map((issue, idx) => (
-                    <li key={idx}>{issue}</li>
-                  ))}
-                </ul>
+              {/* 4. What this image shows section + Garbled OCR toggle */}
+              <div style={{ marginBottom: '14px', background: 'rgba(0,0,0,0.25)', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '6px' }}>
+                  🖼️ {t.whatImageShowsHeader}
+                </div>
+                <p style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: 1.4, marginBottom: '10px' }}>
+                  {t.noVisionModelDesc}
+                </p>
+                
+                <button
+                  type="button"
+                  onClick={() => setShowOcrText(!showOcrText)}
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '0.72rem' }}
+                >
+                  {showOcrText ? t.hideOcrBtn : t.showOcrBtn}
+                </button>
+
+                {showOcrText && (
+                  <div style={{ marginTop: '10px', background: 'rgba(0,0,0,0.3)', padding: '10px', borderRadius: '6px', fontSize: '0.78rem', color: '#cbd5e1', fontFamily: 'var(--font-mono)' }}>
+                    {result.textFound ? `"${result.textFound}"` : t.noReadableText}
+                  </div>
+                )}
               </div>
+
+              {/* 2. Key Reasons Behind Verdict */}
+              {result.issues && result.issues.length > 0 && (
+                <div style={{ marginBottom: '14px', background: 'rgba(0,0,0,0.25)', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent-cyan)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    {t.keyReasonsHeader}
+                  </div>
+                  <ul style={{ paddingLeft: '18px', fontSize: '0.78rem', color: '#94a3b8', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {result.issues.map((issue, idx) => (
+                      <li key={idx} style={{ listStyleType: 'square', lineHeight: 1.4 }}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* 5. Type-Dependent What You Should Do Section */}
+              {getWhatToDoList().length > 0 && (
+                <div style={{ background: 'rgba(0,0,0,0.25)', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <div style={{
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    color: result.verdictLabel === 'Likely REAL' ? 'var(--status-safe)' : result.verdictLabel === 'Inconclusive' ? 'var(--status-warning)' : 'var(--status-danger)',
+                    marginBottom: '6px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    {t.whatYouShouldDoHeader}
+                  </div>
+                  <ul style={{ paddingLeft: '18px', fontSize: '0.78rem', color: '#e2e8f0', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {getWhatToDoList().map((step, idx) => (
+                      <li key={idx} style={{ lineHeight: 1.4 }}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
             </div>
           )}
 
