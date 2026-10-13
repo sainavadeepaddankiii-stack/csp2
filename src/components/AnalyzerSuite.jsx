@@ -25,7 +25,7 @@ export default function AnalyzerSuite({ prefilledContent, prefilledTab, clearPre
 
   const tabs = [
     { id: 'url', name: t.tabUrlTitle, desc: t.tabUrlDesc },
-    { id: 'image', name: t.tabImageTitle, desc: t.tabImageDesc },
+    { id: 'image', name: 'Image Analyzer', desc: 'OCR & metadata checks' },
     { id: 'message', name: t.tabMessageTitle, desc: t.tabMessageDesc },
     { id: 'voice', name: t.tabVoiceTitle, desc: t.tabVoiceDesc },
     { id: 'social', name: t.tabSocialTitle, desc: t.tabSocialDesc }

@@ -3,8 +3,8 @@ import { translations } from '../i18n';
 
 // Phishing keywords inside image OCR
 const HIGH_RISK_WORDS = [
-  'winner', 'prize', 'claim', 'cash prize', 'lottery', 'winner', 'overdue', 
-  'unpaid invoice', 'wire transfer', 'zelle payment', 'verify account', 
+  'winner', 'prize', 'claim', 'cash prize', 'lottery', 'winner', 'overdue',
+  'unpaid invoice', 'wire transfer', 'zelle payment', 'verify account',
   'security warning', 'locked bank', 'gift card', 'deposit required'
 ];
 
@@ -79,8 +79,8 @@ export default function ImageAnalyzer({ lang = 'en' }) {
         nameLower.includes('prize') || nameLower.includes('coupon')
           ? "CONGRATULATIONS WINNER! Call support at +1(800)555-0199 to claim your $5,000 lottery cash prize immediately. Processing fees apply."
           : nameLower.includes('receipt') || nameLower.includes('transfer')
-          ? "Wire Transfer Pending. Amount: $4,500. Zelle transfer is on hold. Pay release fee of $150 to verify transaction."
-          : ""
+            ? "Wire Transfer Pending. Amount: $4,500. Zelle transfer is on hold. Pay release fee of $150 to verify transaction."
+            : ""
       );
     }
 
@@ -95,16 +95,16 @@ export default function ImageAnalyzer({ lang = 'en' }) {
     // Heuristics
     const ocrLower = finalOcr.toLowerCase();
     const matchedThreatWords = HIGH_RISK_WORDS.filter(word => ocrLower.includes(word));
-    
+
     // File name threat triggers
     const hasThreatName = nameLower.includes('scam') || nameLower.includes('fake') || nameLower.includes('altered') || nameLower.includes('phish');
-    
+
     // QR Code check
     const hasQrLink = ocrLower.includes('http') || ocrLower.includes('www.') || nameLower.includes('qr');
 
     let score = 5;
     const issues = [];
-    
+
     if (matchedThreatWords.length > 0) {
       score += 45 + (10 * matchedThreatWords.length);
       issues.push(`Suspicious text found inside image (OCR): ${matchedThreatWords.join(', ')}`);
@@ -277,10 +277,10 @@ export default function ImageAnalyzer({ lang = 'en' }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-        
+
         {/* Upload box & Text Inputs */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          
+
           <div
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -464,7 +464,7 @@ export default function ImageAnalyzer({ lang = 'en' }) {
                 <p style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: 1.4, marginBottom: '10px' }}>
                   {t.noVisionModelDesc}
                 </p>
-                
+
                 <button
                   type="button"
                   onClick={() => setShowOcrText(!showOcrText)}

@@ -5,7 +5,6 @@ import RadarDashboard from './components/RadarDashboard';
 import AnalyzerSuite from './components/AnalyzerSuite';
 import ReportScamForm from './components/ReportScamForm';
 import SocialFeedDashboard from './components/SocialFeedDashboard';
-import ModelCalibration from './components/ModelCalibration';
 import BenchmarkRunner from './components/BenchmarkRunner';
 import { initialRecentReports } from './mockData';
 import './App.css';
@@ -95,9 +94,6 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'calibration' && (
-            <ModelCalibration />
-          )}
 
           {activeTab === 'benchmark' && (
             <BenchmarkRunner />
